@@ -11,6 +11,7 @@ ret, frame = webcam.read() # ret is whether the frame was captured successfully
 if not ret:
     raise Exception("Could not read from webcam.")
 
+frame = np.asarray(frame, dtype=np.float32)
 background = np.mean(frame, axis=2).astype(np.float32)
 
 while True:
@@ -18,7 +19,8 @@ while True:
     if not ret:
         break
 
-    gray_frame = np.mean(frame, axis=2).astype(np.float32)
+    _frame = np.asarray(frame, dtype=np.float32)
+    gray_frame = np.mean(_frame, axis=2).astype(np.float32)
     # gray_frame = dh.convolve(gray_frame, kernel)
     gray_frame = cv2.GaussianBlur(gray_frame, (7, 7), 1.0)
     
@@ -29,7 +31,7 @@ while True:
     
     # https://docs.opencv.org/4.x/d9/d61/tutorial_py_morphological_ops.html
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     
     # kind of running average of all backgrounds, can slowly adapt to changes
