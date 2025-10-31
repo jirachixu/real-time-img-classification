@@ -73,4 +73,34 @@ def generate_boxes(
     
     return default_boxes
 
-print(generate_boxes([torch.randn(2, 3, 300, 300).to(device), torch.randn(2, 3, 150, 150).to(device)]).shape)
+def iou(boxes_a: torch.Tensor, boxes_b: torch.Tensor) -> torch.Tensor:
+    '''
+    Computes the intersection over union between two sets of boxes. The IOU is defined as the area of
+    the intersection divided by the area of the union of two boxes.
+    
+    Args:
+        **box_a**: tensor of shape (num_boxes_a, 4) representing boxes in (xmin, ymin, xmax, ymax) format
+        **box_b**: tensor of shape (num_boxes_b, 4) representing boxes in (xmin, ymin, xmax, ymax) format
+    '''
+    areas_a = (boxes_a[:, 2] - boxes_a[:, 0]) * (boxes_a[:, 3] - boxes_a[:, 1])
+    areas_b = (boxes_b[:, 2] - boxes_b[:, 0]) * (boxes_b[:, 3] - boxes_b[:, 1])
+
+    # max gets the rightmost left x and bottommost top y
+    # None in the indexing adds a new dimension (num_boxes_a,) -> (num_boxes_a, 1)
+    # broadcasts from (num_boxes_a, 1) and (num_boxes_b,) to (num_boxes_a, num_boxes_b)
+    # pairwise matrices of left x and top y coordinates of the intersection boxes
+    x_left = torch.max(boxes_a[:, None, 0], boxes_b[:, 0])
+    y_top = torch.max(boxes_a[:, None, 1], boxes_b[:, 1])
+    # same as above but for leftmost right x and topmost bottom y
+    x_right = torch.min(boxes_a[:, None, 2], boxes_b[:, 2])
+    y_bottom = torch.min(boxes_a[:, None, 3], boxes_b[:, 3])
+
+    # values are clamped since if x_right < x_left or y_bottom < y_top, there is no intersection
+    intersection_areas = torch.clamp(x_right - x_left, min=0) * torch.clamp(y_bottom - y_top, min=0)
+    # similar as before, pairwise matrix of union areas between each pair of boxes
+    union_areas = areas_a[:, None] + areas_b - intersection_areas
+    iou = intersection_areas / union_areas
+
+    return iou
+
+print(iou(torch.rand(100, 4), torch.rand(100, 4)).count_nonzero())
