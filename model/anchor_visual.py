@@ -45,7 +45,7 @@ for box in sample_boxes:
     new_x_max = center_x + scaled_width / 2
     new_y_max = center_y + scaled_height / 2
     
-    # Convert to pixel coordinates
+    # convert to pixel coordinates
     width_px = (new_x_max - new_x_min) * image.shape[3]
     height_px = (new_y_max - new_y_min) * image.shape[2]
     x_px = new_x_min * image.shape[3]
