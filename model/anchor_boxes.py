@@ -40,7 +40,8 @@ def generate_boxes(
         
         input_h, input_w = feature_map[k].shape[-2:]
         
-        # generate normalized center coordinates for each box
+        # generate normalized center coordinates for each box, for scale invariance since coords are based
+        # on proportion of image size, not absolute pixel values
         center_h = (torch.arange(input_h, device=device) + 0.5) / input_h
         center_w = (torch.arange(input_w, device=device) + 0.5) / input_w
         # turns into 2 grids of shape (input_h, input_w), broadcasting columns and rows respectively
@@ -170,3 +171,72 @@ def assign_bounding_boxes(
     # best match for any ground truth box
     
     return anchor_bounding_boxes
+
+def encode_offsets(
+    anchor_boxes: torch.Tensor, 
+    ground_truths: torch.Tensor, 
+    anchor_bounding_boxes: torch.Tensor, 
+    variances: list[float] = [0.1, 0.2]
+) -> torch.Tensor:
+    '''
+    Encode the offsets between the anchor boxes and the assigned ground truth boxes using the variances. 
+    Method is described in https://arxiv.org/pdf/1311.2524 Appendix C. However, in SSDs, the "proposals" 
+    are the anchor boxes and variances are applied to the encoded offsets for better training stability.
+    
+    Args:
+        **anchor_boxes**: tensor of shape (num_anchors, 4) representing anchor boxes in 
+        (xmin, ymin, xmax, ymax) format
+        **ground_truths**: tensor of shape (num_ground_truths, 4) representing ground truth bounding boxes in 
+        (xmin, ymin, xmax, ymax) format
+        **anchor_bounding_boxes**: tensor of shape (num_anchors,) representing the index of the assigned 
+        ground truth box for each anchor box; -1 if no ground truth box is assigned
+        **variances**: list of two float values representing the variances used for encoding
+    
+    Returns:
+        **encoded_boxes**: tensor of shape (num_anchors, 4) representing the encoded bounding boxes
+    '''
+    encoded_boxes = torch.zeros((anchor_boxes.shape[0], 4), device=device)
+    
+    # filter out the unassigned anchors
+    mask = anchor_bounding_boxes >= 0
+    anchor_boxes = anchor_boxes[mask]
+    assigned_indices = anchor_bounding_boxes[mask]
+    ground_truths = ground_truths[assigned_indices]
+    
+    # don't waste time computing if no anchors are assigned
+    if mask.sum() == 0:
+        return encoded_boxes
+    
+    # convert to cx, cy, w, h format
+    anchor_cx = (anchor_boxes[:, 0] + anchor_boxes[:, 2]) / 2
+    anchor_cy = (anchor_boxes[:, 1] + anchor_boxes[:, 3]) / 2
+    anchor_w = anchor_boxes[:, 2] - anchor_boxes[:, 0]
+    anchor_h = anchor_boxes[:, 3] - anchor_boxes[:, 1]
+    
+    ground_truth_cx = (ground_truths[:, 0] + ground_truths[:, 2]) / 2
+    ground_truth_cy = (ground_truths[:, 1] + ground_truths[:, 3]) / 2
+    ground_truth_w = ground_truths[:, 2] - ground_truths[:, 0]
+    ground_truth_h = ground_truths[:, 3] - ground_truths[:, 1]
+
+    # normalized for size invariance 
+    dx = (ground_truth_cx - anchor_cx) / anchor_w
+    dy = (ground_truth_cy - anchor_cy) / anchor_h
+    dw = torch.log(ground_truth_w / anchor_w)
+    dh = torch.log(ground_truth_h / anchor_h)
+    
+    # variances are larger for w and h because these values tend to vary more, and we want the encoded values
+    # for w and h to be scaled down more to prevent instability during training
+    var_cx, var_cy = variances[0], variances[0]
+    var_w, var_h = variances[1], variances[1]
+    
+    offsets_cx = dx / var_cx
+    offsets_cy = dy / var_cy
+    offsets_w = dw / var_w
+    offsets_h = dh / var_h
+
+    # Apply the variances
+    encoded_boxes[mask] = torch.stack((offsets_cx, offsets_cy, offsets_w, offsets_h), dim=1)
+
+    return encoded_boxes
+
+# TODO: implement decoding, NMS, post-processing (do after model.py is done)
