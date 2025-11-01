@@ -40,7 +40,7 @@ def connected_components(mask):
     return list(components.values())
 
 # unused functions for convolution and gaussian blur, opencv functions are used instead because 
-# they are optimized
+# they are optimized, tried using these but too slow for real-time processing
 def gaussian_blur(kernel_size=5, sigma=1.0):
     kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
     center = kernel_size // 2

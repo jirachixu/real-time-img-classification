@@ -1,9 +1,8 @@
 import cv2 # only for accessing webcam and playing back the feed
 import numpy as np
 import detection_helpers as dh
-import cupy as cp
 
-THRESHOLD = 30
+THRESHOLD = 50
 MIN_AREA = 500
 
 webcam = cv2.VideoCapture(0) # 0 refers to default webcam
@@ -25,7 +24,7 @@ while True:
     gray_frame = cv2.GaussianBlur(gray_frame, (7, 7), 1.0)
     
     diff = np.abs(gray_frame - background)
-    # gets the "edges" where motion is detected, white pixels are motion
+    # gets the "edges" where motion is detected and turn into black/white, white pixels are motion
     mask = diff > THRESHOLD 
     mask = mask.astype(np.uint8) * 255
     

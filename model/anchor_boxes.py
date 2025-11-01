@@ -5,10 +5,9 @@ import math
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
-def generate_boxes(
+def generate_anchor_boxes(
     feature_map: list[torch.Tensor], 
     aspect_ratios: list[float] = [1.0, 2.0, 3.0, 0.5, 0.33], 
-    num_scales: int = 5
 ) -> torch.Tensor:
     '''
     Generate the default anchor boxes for object detection, as described in https://arxiv.org/pdf/1512.02325.
@@ -25,12 +24,12 @@ def generate_boxes(
         (xmin, ymin, xmax, ymax) format, normalized between 0 and 1
     '''
     # evenly spaced scales between 0.2 and 0.9, as described in the paper
-    scales = torch.linspace(0.2, 0.9, num_scales, device=device)
+    scales = torch.linspace(0.2, 0.9, len(feature_map), device=device)
     ratios = torch.tensor(aspect_ratios, device=device)
     boxes = []
     for k in range(len(feature_map)):
         # s'_k = sqrt(s_k * s_(k+1)) as described in the paper, only for scale=1
-        s_prime = math.sqrt(scales[k] * scales[k + 1]) if k + 1 < num_scales else scales[k]
+        s_prime = math.sqrt(scales[k] * scales[k + 1]) if k + 1 < len(feature_map) else scales[k]
         pairs = [(s_prime, s_prime)]
         # generate width-height pairs for each aspect ratio
         for r in ratios:
@@ -52,7 +51,8 @@ def generate_boxes(
         shift_y = shift_y.reshape(-1)
         shift_x = shift_x.reshape(-1)
         # shape (num_boxes * num_pixels, 2), where each row is (shift_x, shift_y) for a box
-        shifts = torch.stack((shift_x, shift_y) * len(pairs), dim=1).reshape(-1, 2)
+        shifts = torch.stack((shift_x, shift_y), dim=1)
+        shifts = shifts.repeat_interleave(len(pairs), dim=0)
         # turns pairs into the same shape as shifts, then concatenates to get 
         # (shift_x, shift_y, width, height)
         pairs = torch.as_tensor(pairs, device=device)
@@ -72,8 +72,9 @@ def generate_boxes(
     all_boxes = torch.cat(boxes, dim=0)
     
     batch_size = feature_map[0].shape[0]
-    
-    # repeat boxes for each batch and reshape to (batch_size, num_boxes, 4)
+
+    # unsqueeze adds a dimension in front, repeat boxes for each batch and reshape to 
+    # (batch_size, num_boxes, 4), so one set of boxes per image in the batch
     default_boxes = all_boxes.unsqueeze(0).expand(batch_size, -1, -1)
     
     return default_boxes
