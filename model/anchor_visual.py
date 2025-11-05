@@ -23,7 +23,7 @@ image = torchvision.transforms.Resize(20)(image) # 20 * 35
 anchor_boxes = generate_anchor_boxes([image])
 
 idx = []
-[idx.extend(range(i*6, (i + 1)*6)) for i in range(0, 700, 25)]
+[idx.extend(range(i * 6, (i + 1) * 6)) for i in range(0, 700, 25)]
 sample_boxes = anchor_boxes[0][idx]
 
 plt.figure(figsize=(10,10))

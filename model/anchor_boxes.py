@@ -6,7 +6,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
 def generate_anchor_boxes(
-    feature_map: list[torch.Tensor], 
+    feature_maps: list[torch.Tensor], 
     aspect_ratios: list[float] = [1.0, 2.0, 3.0, 0.5, 0.33], 
 ) -> torch.Tensor:
     '''
@@ -24,12 +24,12 @@ def generate_anchor_boxes(
         (xmin, ymin, xmax, ymax) format, normalized between 0 and 1
     '''
     # evenly spaced scales between 0.2 and 0.9, as described in the paper
-    scales = torch.linspace(0.2, 0.9, len(feature_map), device=device)
+    scales = torch.linspace(0.2, 0.9, len(feature_maps), device=device)
     ratios = torch.tensor(aspect_ratios, device=device)
     boxes = []
-    for k in range(len(feature_map)):
+    for k in range(len(feature_maps)):
         # s'_k = sqrt(s_k * s_(k+1)) as described in the paper, only for scale=1
-        s_prime = math.sqrt(scales[k] * scales[k + 1]) if k + 1 < len(feature_map) else scales[k]
+        s_prime = math.sqrt(scales[k] * scales[k + 1]) if k + 1 < len(feature_maps) else scales[k]
         pairs = [(s_prime, s_prime)]
         # generate width-height pairs for each aspect ratio
         for r in ratios:
@@ -37,7 +37,7 @@ def generate_anchor_boxes(
             h = scales[k] / math.sqrt(r)
             pairs.append((w, h))
         
-        input_h, input_w = feature_map[k].shape[-2:]
+        input_h, input_w = feature_maps[k].shape[-2:]
         
         # generate normalized center coordinates for each box, for scale invariance since coords are based
         # on proportion of image size, not absolute pixel values
@@ -71,7 +71,7 @@ def generate_anchor_boxes(
     
     all_boxes = torch.cat(boxes, dim=0)
     
-    batch_size = feature_map[0].shape[0]
+    batch_size = feature_maps[0].shape[0]
 
     # unsqueeze adds a dimension in front, repeat boxes for each batch and reshape to 
     # (batch_size, num_boxes, 4), so one set of boxes per image in the batch
@@ -119,8 +119,9 @@ def assign_bounding_boxes(
     iou_threshold: float = 0.5
 ) -> torch.Tensor:
     '''
-    Calculates the jaccards (IOU) between each anchor box and ground truth box, and assigns each anchor to 
-    the ground truth box with the highest IOU if it is above the threshold. Details can be seen here:
+    Calculates the jaccards (IOU) between each anchor box and ground truth box, assigns each anchor to 
+    the ground truth box with the highest IOU if it is above the threshold, then assigns remaining unassigned ground 
+    truth boxes to the anchor with the highest IOU. Details can be seen here:
     https://d2l.ai/chapter_computer-vision/anchor.html#:~:text=to%20anchor%0Aboxes.-,14.4.3.1,-.%20Assigning%20Ground-Truth
     
     Args:
@@ -194,7 +195,8 @@ def encode_offsets(
         **variances**: list of two float values representing the variances used for encoding
     
     Returns:
-        **encoded_boxes**: tensor of shape (num_anchors, 4) representing the encoded bounding boxes
+        **encoded_boxes**: tensor of shape (num_anchors, 4) representing the encoded boxes (offsets between 
+        anchor boxes and assigned ground truth boxes)
     '''
     encoded_boxes = torch.zeros((anchor_boxes.shape[0], 4), device=device)
     
@@ -222,6 +224,7 @@ def encode_offsets(
     # normalized for size invariance 
     dx = (ground_truth_cx - anchor_cx) / anchor_w
     dy = (ground_truth_cy - anchor_cy) / anchor_h
+    # the log is taken so that, for example, multiplying and dividing by 2 are symmetric operations
     dw = torch.log(ground_truth_w / anchor_w)
     dh = torch.log(ground_truth_h / anchor_h)
     
