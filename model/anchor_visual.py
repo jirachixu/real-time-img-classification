@@ -1,6 +1,5 @@
 import torch
 import torchvision
-import torch.nn as nn
 import torchvision.io as io
 from anchor_boxes import *
 import dotenv
@@ -53,5 +52,10 @@ for box in sample_boxes:
     
     rect = Rectangle((x_px, y_px), width_px, height_px, fill=False, color='red', linewidth=1)
     plt.gca().add_patch(rect)
+
+try:
+    os.mkdir("../img")
+except Exception as e:
+    pass
 
 plt.savefig("../img/anchor_visualization.png")

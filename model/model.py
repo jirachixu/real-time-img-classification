@@ -97,7 +97,6 @@ class SSDModel(nn.Module):
             nn.Conv2d(bottleneck_channels, out_channels, kernel_size=1),
         )
         
-    # TODO: implement loss function and prediction function
     def forward(self, img: torch.Tensor, softmax: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         '''
         Forward pass through the model. Turns the input image into feature maps, then applies the 
@@ -149,6 +148,8 @@ class SSDModel(nn.Module):
             all_class_scores = F.softmax(all_class_scores, dim=-1)
         
         return all_offsets, all_class_scores
+    
+    # TODO: implement loss function and prediction function
 
 # test dimensionality of outputs
 model = SSDModel()
