@@ -4,7 +4,7 @@ This is an SSD model implemented using Python/PyTorch from scratch, i.e. no mode
 
 ### Usage
 
-TODO
+TODO: complete after full functionality is implemented
 
 ### Visualize Anchor Boxes
 
