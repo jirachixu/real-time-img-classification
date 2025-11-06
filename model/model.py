@@ -17,7 +17,8 @@ class SSDModel(nn.Module):
         # +1 for background class
         self.n_classes = n_classes + 1
         self.n_anchors = 6 # number of anchors per feature map location
-        # uses ResNet-50 TODO write comment about why
+        # uses ResNet-50 to generate feature maps, we need to use the pretrained weights otherwise the 
+        # feature maps will be meaningless
         self.backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
         self.backbone.to(device)
         # layer1 contains non-feature-extracting layers
@@ -31,6 +32,8 @@ class SSDModel(nn.Module):
         )
         # these layers extract the feature maps we will use for detection
         # dimensions specified by the input size of 300 x 300, as in the paper
+        # https://cs231n.github.io/convolutional-networks/#conv:~:text=architectures%20section%20below.-,Convolution%20Demo,-.%20Below%20is%20a
+        # demo of convolution operation on matrix
         self.layer2 = self.backbone.layer2 # 38 x 38
         self.layer3 = self.backbone.layer3 # 19 x 19
         self.layer4 = self.backbone.layer4 # 10 x 10
@@ -94,7 +97,58 @@ class SSDModel(nn.Module):
             nn.Conv2d(bottleneck_channels, out_channels, kernel_size=1),
         )
         
-        # TODO: implement forward pass, loss function, and prediction function
+    # TODO: implement loss function and prediction function
+    def forward(self, img: torch.Tensor, softmax: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+        '''
+        Forward pass through the model. Turns the input image into feature maps, then applies the 
+        corresponding detection heads for each feature map to get the final predictions.
+        
+        Args:
+            img (torch.Tensor): Input image tensor of shape (batch_size, 3, H, W).
+            softmax (bool, optional): Whether to apply softmax to class scores. Defaults to False.
+            
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Tuple containing offsets tensor and class scores tensor.
+        '''
+        feat = self.layer1(img)
+        feat_1 = self.layer2(feat)
+        feat_2 = self.layer3(feat_1)
+        feat_3 = self.layer4(feat_2)
+        feat_4 = self.extra1(feat_3)
+        feat_5 = self.extra2(feat_4)
+        feat_6 = self.extra3(feat_5)
+        feature_maps = [feat_1, feat_2, feat_3, feat_4, feat_5, feat_6]
+        
+        all_offsets = []
+        all_class_scores = []
+        
+        for i, feature_map in enumerate(feature_maps):
+            offsets = self.offset_convs[i](feature_map)
+            class_scores = self.classification_convs[i](feature_map)
+            # we have to reshape here to allow for concatenation
+            # torch.Tensor.contiguous() returns a contiguous tensor containing the same data 
+            # as self tensor, which is more efficient than a non-contiguous tensor
+            # also allows us to use the more efficient view() function instead of reshape()
+            offsets = offsets.permute(0, 2, 3, 1).contiguous()
+            class_scores = class_scores.permute(0, 2, 3, 1).contiguous()
+            # (batch_size, n_anchors * h * w, 4)
+            # flattens dimensions so that the middle dimension becomes each of the anchors' 
+            # offsets at (0, 0), (0, 1), ..., (h, w), and then the 4 at the end takes every 
+            # 4 consecutive values and groups them (∆cx, ∆cy, ∆w, ∆h)
+            offsets = offsets.view(offsets.shape[0], -1, 4) 
+            # (batch_size, n_anchors * h * w, n_classes)
+            class_scores = class_scores.view(class_scores.shape[0], -1, self.n_classes)
+            
+            all_offsets.append(offsets)
+            all_class_scores.append(class_scores)
+        
+        all_offsets = torch.cat(all_offsets, dim=1)
+        all_class_scores = torch.cat(all_class_scores, dim=1)
+        
+        if softmax:
+            all_class_scores = F.softmax(all_class_scores, dim=-1)
+        
+        return all_offsets, all_class_scores
 
 # test dimensionality of outputs
 model = SSDModel()
@@ -102,6 +156,9 @@ model.to(device)
 
 with torch.no_grad():
     x = torch.randn(1, 3, 300, 300, device=device)
+    
+    forwarded = model.forward(x)
+    print(forwarded[0].shape, forwarded[1].shape)
     
     x = model.layer1(x)
     

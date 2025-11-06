@@ -28,7 +28,7 @@ def generate_anchor_boxes(
     ratios = torch.tensor(aspect_ratios, device=device)
     boxes = []
     for k in range(len(feature_maps)):
-        # s'_k = sqrt(s_k * s_(k+1)) as described in the paper, only for scale=1
+        # s'_k = sqrt(s_k * s_(k + 1)) as described in the paper, only for scale = 1
         s_prime = math.sqrt(scales[k] * scales[k + 1]) if k + 1 < len(feature_maps) else scales[k]
         pairs = [(s_prime, s_prime)]
         # generate width-height pairs for each aspect ratio
