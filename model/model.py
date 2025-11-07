@@ -2,6 +2,7 @@ import torch
 import torchvision.models as models
 import torch.nn as nn
 import torch.nn.functional as F
+from anchor_boxes import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -10,7 +11,7 @@ class SSDModel(nn.Module):
     SSD model using ResNet-50 as backbone. Architecture is described in the SSD paper.
         
     Args:
-        n_classes (int): Number of object classes (including background).
+        **n_classes (int)**: Number of object classes (including background).
     '''
     def __init__(self, n_classes: int = 80) -> None:
         super().__init__()
@@ -66,6 +67,21 @@ class SSDModel(nn.Module):
             nn.Conv2d(256, self.n_anchors * self.n_classes, kernel_size=3, padding=1),
         ])
         
+        # https://docs.pytorch.org/docs/stable/generated/torch.nn.parameter.Buffer.html
+        # basically, a tensor that is not a parameter, but should still be part of the model state
+        # no gradients, etc.
+        self.register_buffer('anchor_boxes', None)
+        
+    def _initialize_anchors(self, feature_maps: list[torch.Tensor]) -> None:
+        '''
+        Initializes anchor boxes for each feature map size.
+        
+        Args:
+            **feature_maps (list[torch.Tensor])**: List of feature map batches from different layers.
+        '''
+        if self.anchor_boxes is None:
+            self.anchor_boxes = generate_anchor_boxes(feature_maps)
+    
     def _make_extra_layers(self, 
             in_channels: int, 
             bottleneck_channels: int, 
@@ -80,14 +96,14 @@ class SSDModel(nn.Module):
         count.
         
         Args:
-            in_channels (int): Number of input channels.
-            bottleneck_channels (int): Number of channels in the bottleneck layer.
-            out_channels (int): Number of output channels.
-            padding (int, optional): Padding for the 3x3 convolution.
-            stride (int, optional): Stride for the 3x3 convolution.
+            **in_channels (int)**: Number of input channels.
+            **bottleneck_channels (int)**: Number of channels in the bottleneck layer.
+            **out_channels (int)**: Number of output channels.
+            **padding (int, optional)**: Padding for the 3x3 convolution.
+            **stride (int, optional)**: Stride for the 3x3 convolution.
             
         Returns:
-            nn.Sequential: Extra bottleneck convolutional block.
+            **nn.Sequential**: Extra bottleneck convolutional block.
         '''
         return nn.Sequential(
             nn.Conv2d(in_channels, bottleneck_channels, kernel_size=1),
@@ -97,17 +113,16 @@ class SSDModel(nn.Module):
             nn.Conv2d(bottleneck_channels, out_channels, kernel_size=1),
         )
         
-    def forward(self, img: torch.Tensor, softmax: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, img: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         '''
         Forward pass through the model. Turns the input image into feature maps, then applies the 
         corresponding detection heads for each feature map to get the final predictions.
         
         Args:
-            img (torch.Tensor): Input image tensor of shape (batch_size, 3, H, W).
-            softmax (bool, optional): Whether to apply softmax to class scores. Defaults to False.
+            **img (torch.Tensor)**: Input image tensor of shape (batch_size, 3, height, width).
             
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: Tuple containing offsets tensor and class scores tensor.
+            **tuple[torch.Tensor, torch.Tensor]**: Tuple containing offsets tensor and class scores tensor.
         '''
         feat = self.layer1(img)
         feat_1 = self.layer2(feat)
@@ -117,6 +132,8 @@ class SSDModel(nn.Module):
         feat_5 = self.extra2(feat_4)
         feat_6 = self.extra3(feat_5)
         feature_maps = [feat_1, feat_2, feat_3, feat_4, feat_5, feat_6]
+        
+        self._initialize_anchors(feature_maps)
         
         all_offsets = []
         all_class_scores = []
@@ -144,22 +161,101 @@ class SSDModel(nn.Module):
         all_offsets = torch.cat(all_offsets, dim=1)
         all_class_scores = torch.cat(all_class_scores, dim=1)
         
-        if softmax:
-            all_class_scores = F.softmax(all_class_scores, dim=-1)
-        
         return all_offsets, all_class_scores
     
-    # TODO: implement loss function and prediction function
+    def calculate_loss(self, 
+            predicted_offsets: torch.Tensor, 
+            predicted_class_scores: torch.Tensor, 
+            true_boxes: torch.Tensor, 
+            true_labels: torch.Tensor,
+            neg_to_pos_ratio: int = 3
+        ) -> torch.Tensor:
+        '''
+        Calculates the loss for the model. Combines localization loss (smooth L1) and classification loss 
+        (cross-entropy). Exact formula described in the SSD paper.
+
+        Args:
+            **predicted_offsets (torch.Tensor)**: Predicted offsets tensor of shape (batch_size, n_anchors, 4).
+            **predicted_class_scores (torch.Tensor)**: Predicted class scores tensor of shape (batch_size, 
+            n_anchors, n_classes).
+            **true_boxes (torch.Tensor)**: Ground truth bounding boxes tensor of shape (batch_size, n_boxes, 4).
+            **true_labels (torch.Tensor)**: Ground truth labels tensor of shape (batch_size, n_boxes).
+            **neg_to_pos_ratio (int, optional)**: Ratio of negative to positive samples for hard negative mining.
+        
+        Returns:
+            **torch.Tensor**: Calculated loss value.
+        '''
+        batch_size = predicted_offsets.shape[0]
+        tot_offset_loss = torch.tensor(0.0, device=device)
+        tot_conf_loss = torch.tensor(0.0, device=device)
+        # loss for misclassifying something when it should be background
+        n_pos_boxes = 0
+        
+        # we go image by image in the batch
+        for batch in range(batch_size):
+            true_boxes_batch = true_boxes[batch]
+            assigned_boxes = assign_bounding_boxes(true_boxes_batch, self.anchor_boxes)
+            mask = assigned_boxes >= 0
+            
+            n_pos_batch = mask.sum().item()
+            n_pos_boxes += n_pos_batch
+            
+            encoded_boxes = encode_offsets(self.anchor_boxes, true_boxes_batch, assigned_boxes)
+            
+            # details of the math for loss functions can be found easily online
+            if n_pos_batch > 0:
+                # output is a 1x1 tensor (scalar), don't extract because we want to keep the gradient
+                # if we don't use sum reduction and instead don't reduce, we would get an output 
+                # tensor of shape (4 * n_pos_batch,), which is the loss for every single coordinate
+                # of all assigned boxes
+                # we also don't use mean because we regularize at the end
+                tot_offset_loss += F.smooth_l1_loss(predicted_offsets[batch][mask], encoded_boxes[mask], reduction='sum')
+            
+            anchor_classes = torch.zeros(encoded_boxes.shape[0], device=device, dtype=torch.long)
+            # gets the class labels for the assigned boxes, + 1 to account for background class at 0
+            anchor_classes[mask] = true_labels[batch][assigned_boxes[mask]] + 1 
+            # returns shape (n_anchors,) with the total cross entropy loss for each anchor box
+            # the sum in the denominator of the softmax operation is over each of the 81 class 
+            # scores in predicted_class_scores, the numerator is the class score corresponding
+            # to the true class label in anchor_classes
+            # reduction='none' returns the loss per element instead of averaging or summing
+            conf_loss = F.cross_entropy(predicted_class_scores[batch], anchor_classes, reduction='none')
+            # gets the cross_entropy loss for only the assigned (positive) anchor boxes and sums
+            conf_loss_pos = conf_loss[mask].sum()
+            # ~ operator is bitwise NOT, and mask is boolean so it will perform logical negation
+            # and get the loss for only the unassigned (background) anchor boxes
+            conf_loss_bg = conf_loss[~mask]
+            # hard negative mining, keeping the highest loss background boxes
+            # in other words, the background boxes that "look" most like actual objects
+            # helps the model distinguish better between background and object
+            if conf_loss_bg.shape[0] > 0 and n_pos_batch > 0:
+                vals, idx = conf_loss_bg.sort(descending=True)
+                n_negatives = min(neg_to_pos_ratio * n_pos_batch, conf_loss_bg.shape[0])
+                hard_negatives = idx[:n_negatives]
+                conf_loss_bg = conf_loss_bg[hard_negatives].sum()
+            
+            tot_conf_loss += conf_loss_pos + conf_loss_bg
+            n_pos_boxes = max(n_pos_boxes, 1)
+
+        return (tot_offset_loss + tot_conf_loss) / n_pos_boxes
+    
+    # TODO: implement prediction function
 
 # test dimensionality of outputs
 model = SSDModel()
 model.to(device)
 
 with torch.no_grad():
-    x = torch.randn(1, 3, 300, 300, device=device)
+    x = torch.randn(2, 3, 300, 300, device=device)
     
     forwarded = model.forward(x)
     print(forwarded[0].shape, forwarded[1].shape)
+    loss = model.calculate_loss(forwarded[0], 
+                        forwarded[1], 
+                        torch.randn(2, 5, 4, device=device), 
+                        torch.randint(0, 80, (2, 5), device=device)
+                    )
+    print(f'loss: {loss}')
     
     x = model.layer1(x)
     
@@ -175,3 +271,5 @@ with torch.no_grad():
     print(f"Extra2 output: {x.shape}")
     x = model.extra3(x)
     print(f"Extra3 output: {x.shape}")
+    
+    print(model.anchor_boxes, model.anchor_boxes.shape)

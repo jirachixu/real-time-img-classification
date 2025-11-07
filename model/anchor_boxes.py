@@ -11,7 +11,10 @@ def generate_anchor_boxes(
 ) -> torch.Tensor:
     '''
     Generate the default anchor boxes for object detection, as described in https://arxiv.org/pdf/1512.02325.
-    Default values are set to those used in the paper.
+    Default values are set to those used in the paper. Generates one set of anchor boxes for each feature map
+    size, which are expanded to fill batches later during training. This is more efficient than simply 
+    generating anchor boxes for each image in the batch, since anchors are the same for all feature maps 
+    of the same size.
     
     Args:
         **feature_map**: list of input tensors of shape (batch_size, channels, height, width); feature maps
@@ -71,13 +74,7 @@ def generate_anchor_boxes(
     
     all_boxes = torch.cat(boxes, dim=0)
     
-    batch_size = feature_maps[0].shape[0]
-
-    # unsqueeze adds a dimension in front, repeat boxes for each batch and reshape to 
-    # (batch_size, num_boxes, 4), so one set of boxes per image in the batch
-    default_boxes = all_boxes.unsqueeze(0).expand(batch_size, -1, -1)
-    
-    return default_boxes
+    return all_boxes
 
 def iou(boxes_a: torch.Tensor, boxes_b: torch.Tensor) -> torch.Tensor:
     '''
@@ -207,19 +204,20 @@ def encode_offsets(
     ground_truths = ground_truths[assigned_indices]
     
     # don't waste time computing if no anchors are assigned
-    if mask.sum() == 0:
+    if not mask.any():
         return encoded_boxes
     
     # convert to cx, cy, w, h format
     anchor_cx = (anchor_boxes[:, 0] + anchor_boxes[:, 2]) / 2
     anchor_cy = (anchor_boxes[:, 1] + anchor_boxes[:, 3]) / 2
-    anchor_w = anchor_boxes[:, 2] - anchor_boxes[:, 0]
-    anchor_h = anchor_boxes[:, 3] - anchor_boxes[:, 1]
+    # clamped to epsilon value to prevent division by 0
+    anchor_w = torch.clamp(anchor_boxes[:, 2] - anchor_boxes[:, 0], min=1e-8)
+    anchor_h = torch.clamp(anchor_boxes[:, 3] - anchor_boxes[:, 1], min=1e-8)
     
     ground_truth_cx = (ground_truths[:, 0] + ground_truths[:, 2]) / 2
     ground_truth_cy = (ground_truths[:, 1] + ground_truths[:, 3]) / 2
-    ground_truth_w = ground_truths[:, 2] - ground_truths[:, 0]
-    ground_truth_h = ground_truths[:, 3] - ground_truths[:, 1]
+    ground_truth_w = torch.clamp(ground_truths[:, 2] - ground_truths[:, 0], min=1e-8)
+    ground_truth_h = torch.clamp(ground_truths[:, 3] - ground_truths[:, 1], min=1e-8)
 
     # normalized for size invariance 
     dx = (ground_truth_cx - anchor_cx) / anchor_w
@@ -238,8 +236,8 @@ def encode_offsets(
     offsets_w = dw / var_w
     offsets_h = dh / var_h
 
-    # Apply the variances
-    encoded_boxes[mask] = torch.stack((offsets_cx, offsets_cy, offsets_w, offsets_h), dim=1)
+    encoded_offsets = torch.stack((offsets_cx, offsets_cy, offsets_w, offsets_h), dim=1)
+    encoded_boxes[mask, :] = encoded_offsets
 
     return encoded_boxes
 

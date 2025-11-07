@@ -13,3 +13,5 @@ Create a .env file with a variable named `TEST_IMG` and set it to the location o
 <div style="text-align:center">
     <img src="img/anchor_visualization.png" width="500" alt="Example anchor box visualization">
 </div>
+
+*Note:* The `motion(ignore)` folder has nothing to do with the actual SSD model, it's just there for me to explain my thought process behind why I chose to do this project.
