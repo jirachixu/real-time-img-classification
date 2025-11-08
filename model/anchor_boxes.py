@@ -158,8 +158,8 @@ def assign_bounding_boxes(
         max_index = torch.argmax(jaccards)
         # is correct since the first n_ground_truths values correspond to anchor 0, 
         # next n_ground_truths to anchor 1, etc.
-        box_index = max_index % n_ground_truths
         anchor_index = max_index // n_ground_truths
+        box_index = max_index % n_ground_truths
         
         anchor_bounding_boxes[anchor_index] = box_index
         jaccards[:, box_index] = col_discard
@@ -292,5 +292,3 @@ def decode_offsets(
     # from going out of bounds
     decoded_boxes = torch.clamp(decoded_boxes, min=0.0, max=1.0)
     return decoded_boxes
-
-# TODO: implement NMS, post-processing (do after model.py is done)

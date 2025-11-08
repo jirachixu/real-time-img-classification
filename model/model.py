@@ -3,6 +3,11 @@ import torchvision.models as models
 import torch.nn as nn
 import torch.nn.functional as F
 from anchor_boxes import *
+from torchvision.ops import batched_nms
+
+# debugging purposes
+# import os
+# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -238,7 +243,115 @@ class SSDModel(nn.Module):
         n_pos_boxes = max(n_pos_boxes, 1)
         return (tot_offset_loss + tot_conf_loss) / n_pos_boxes
     
-    # TODO: implement prediction function
+    def nms(self, 
+            boxes: torch.Tensor, 
+            confidences: torch.Tensor, 
+            iou_threshold: float = 0.5, 
+            confidence_threshold: float = 0.4,
+            max_detections_per_class: int = 100,
+            use_torch: bool = True
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        '''
+        Applies Non-Maximum Suppression (NMS) to filter overlapping bounding boxes based on their scores. 
+        This prevents overlapping boxes and removes duplicate boxes for the same object.
+        
+        Args:
+            **boxes (torch.Tensor)**: Tensor of shape (n_boxes, 4) containing decoded bounding box coordinates.
+            **confidences (torch.Tensor)**: Tensor of shape (n_boxes,) containing confidence scores 
+            for each box.
+            **iou_threshold (float, optional)**: IoU threshold for NMS.
+            **confidence_threshold (float, optional)**: Confidence threshold to filter boxes before NMS.
+            **max_detections_per_class (int, optional)**: Maximum number of detections to keep per class.
+            **use_torch (bool, optional)**: Whether to use PyTorch's built-in NMS function. 
+            If False, uses custom (slower) implementation.
+        
+        Returns:
+            **tuple(list)**: Tuple containing lists of kept boxes, labels, and scores after NMS. These 
+            class labels are 1-indexed as the model represents the background class as 0, so 1 must be 
+            subtracted to get the original class labels during prediction.
+        '''
+        if not use_torch:
+            kept_boxes = []
+            kept_labels = []
+            kept_scores = []
+            # do nms per class, except for class 0 which is background
+            for class_n in range(1, self.n_classes):
+                class_confidences = confidences[:, class_n]
+                confidence_mask = class_confidences > confidence_threshold
+                n_candidates = confidence_mask.sum().item()
+                
+                # don't waste time computing NMS if there are no boxes above the confidence threshold
+                if n_candidates == 0:
+                    continue
+                
+                if n_candidates > max_detections_per_class:
+                    top_k_scores, top_k_indices = torch.topk(class_confidences, k=max_detections_per_class)
+                    candidate_boxes = boxes[top_k_indices]
+                    candidate_confidences = top_k_scores
+                else:
+                    candidate_boxes = boxes[confidence_mask]
+                    candidate_confidences = class_confidences[confidence_mask]
+                
+                # stores indices of *candidate* boxes, not the original confidence tensor
+                sorted_idx = torch.argsort(candidate_confidences, descending=True)
+                
+                keep_idx = []
+                while sorted_idx.shape[0] > 0:
+                    curr_max = sorted_idx[0]
+                    keep_idx.append(curr_max.item())
+                    # if there's only 1 item in sorted_idx, there's no other boxes to compare to
+                    # so we break early
+                    if sorted_idx.shape[0] == 1:
+                        break
+                    # we have to unsqueeze to match the expected input dimensions 
+                    # for the iou function
+                    curr_box = candidate_boxes[curr_max].unsqueeze(0)
+                    remaining_boxes = candidate_boxes[sorted_idx[1:]]
+                    # iou returns shape (1, n_remaining_boxes), which we squeeze to (n_remaining_boxes,)
+                    ious = iou(curr_box, remaining_boxes).squeeze(0)
+                    # get rid of boxes with iou above the threshold
+                    below_threshold = ious <= iou_threshold
+                    sorted_idx = sorted_idx[1:][below_threshold]
+                
+                if keep_idx:
+                    keep_idx = torch.tensor(keep_idx, device=device)
+                    kept_boxes.append(candidate_boxes[keep_idx])
+                    kept_labels.append(torch.tensor([class_n] * len(keep_idx), device=device))
+                    kept_scores.append(candidate_confidences[keep_idx])
+            
+            if kept_boxes:
+                return (
+                    torch.cat(kept_boxes, dim=0), 
+                    torch.cat(kept_labels, dim=0), 
+                    torch.cat(kept_scores, dim=0)
+                )
+            else:
+                return None
+        
+        # gets the maximum confidence score and corresponding class for each box
+        max_scores, max_classes = confidences[:, 1:].max(dim=1)
+        # filter out boxes whose maximum confidence score across all classes is lower
+        # than the threshold
+        confidence_mask = max_scores > confidence_threshold
+        
+        if confidence_mask.sum().item() == 0:
+            return None
+        
+        candidate_boxes = boxes[confidence_mask]
+        candidate_scores = max_scores[confidence_mask]
+        # + 1 to account for background class at index 0
+        candidate_classes = max_classes[confidence_mask] + 1 
+        
+        # indices of kept boxes
+        keep = batched_nms(candidate_boxes, candidate_scores, candidate_classes, iou_threshold)
+        
+        return (
+            candidate_boxes[keep],
+            candidate_classes[keep],
+            candidate_scores[keep]
+        )
+
+    # TODO: implement prediction function REMEMBER TO SUBTRACT 1 FROM NMS OUTPUT LABELS
 
 # test dimensionality of outputs
 model = SSDModel()
@@ -255,6 +368,12 @@ with torch.no_grad():
                         torch.randint(0, 80, (2, 5), device=device)
                     )
     print(f'loss: {loss}')
+    decoded = decode_offsets(model.anchor_boxes, forwarded[0][0])
+    print(decoded.shape)
+    nms = model.nms(decoded, forwarded[1][0])
+    print(f'nms: {nms}')
+    if nms is not None:
+        print(nms[0].shape, nms[1].shape, nms[2].shape)
     
     x = model.layer1(x)
     
@@ -271,4 +390,3 @@ with torch.no_grad():
     x = model.extra3(x)
     print(f"Extra3 output: {x.shape}")
     
-    print(model.anchor_boxes, model.anchor_boxes.shape)
