@@ -188,7 +188,6 @@ class SSDModel(nn.Module):
         batch_size = predicted_offsets.shape[0]
         tot_offset_loss = torch.tensor(0.0, device=device)
         tot_conf_loss = torch.tensor(0.0, device=device)
-        # loss for misclassifying something when it should be background
         n_pos_boxes = 0
         
         # we go image by image in the batch
@@ -235,8 +234,8 @@ class SSDModel(nn.Module):
                 conf_loss_bg = conf_loss_bg[hard_negatives].sum()
             
             tot_conf_loss += conf_loss_pos + conf_loss_bg
-            n_pos_boxes = max(n_pos_boxes, 1)
-
+            
+        n_pos_boxes = max(n_pos_boxes, 1)
         return (tot_offset_loss + tot_conf_loss) / n_pos_boxes
     
     # TODO: implement prediction function

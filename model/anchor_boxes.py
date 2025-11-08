@@ -199,25 +199,25 @@ def encode_offsets(
     
     # filter out the unassigned anchors
     mask = anchor_bounding_boxes >= 0
-    anchor_boxes = anchor_boxes[mask]
+    assigned_anchors = anchor_boxes[mask]
     assigned_indices = anchor_bounding_boxes[mask]
-    ground_truths = ground_truths[assigned_indices]
+    assigned_ground_truths = ground_truths[assigned_indices]
     
     # don't waste time computing if no anchors are assigned
     if not mask.any():
         return encoded_boxes
     
     # convert to cx, cy, w, h format
-    anchor_cx = (anchor_boxes[:, 0] + anchor_boxes[:, 2]) / 2
-    anchor_cy = (anchor_boxes[:, 1] + anchor_boxes[:, 3]) / 2
+    anchor_cx = (assigned_anchors[:, 0] + assigned_anchors[:, 2]) / 2
+    anchor_cy = (assigned_anchors[:, 1] + assigned_anchors[:, 3]) / 2
     # clamped to epsilon value to prevent division by 0
-    anchor_w = torch.clamp(anchor_boxes[:, 2] - anchor_boxes[:, 0], min=1e-8)
-    anchor_h = torch.clamp(anchor_boxes[:, 3] - anchor_boxes[:, 1], min=1e-8)
+    anchor_w = torch.clamp(assigned_anchors[:, 2] - assigned_anchors[:, 0], min=1e-8)
+    anchor_h = torch.clamp(assigned_anchors[:, 3] - assigned_anchors[:, 1], min=1e-8)
     
-    ground_truth_cx = (ground_truths[:, 0] + ground_truths[:, 2]) / 2
-    ground_truth_cy = (ground_truths[:, 1] + ground_truths[:, 3]) / 2
-    ground_truth_w = torch.clamp(ground_truths[:, 2] - ground_truths[:, 0], min=1e-8)
-    ground_truth_h = torch.clamp(ground_truths[:, 3] - ground_truths[:, 1], min=1e-8)
+    ground_truth_cx = (assigned_ground_truths[:, 0] + assigned_ground_truths[:, 2]) / 2
+    ground_truth_cy = (assigned_ground_truths[:, 1] + assigned_ground_truths[:, 3]) / 2
+    ground_truth_w = torch.clamp(assigned_ground_truths[:, 2] - assigned_ground_truths[:, 0], min=1e-8)
+    ground_truth_h = torch.clamp(assigned_ground_truths[:, 3] - assigned_ground_truths[:, 1], min=1e-8)
 
     # normalized for size invariance 
     dx = (ground_truth_cx - anchor_cx) / anchor_w
@@ -241,4 +241,56 @@ def encode_offsets(
 
     return encoded_boxes
 
-# TODO: implement decoding, NMS, post-processing (do after model.py is done)
+def decode_offsets(
+    anchor_boxes: torch.Tensor, 
+    encoded_offsets: torch.Tensor, 
+    variances: list[float] = [0.1, 0.2]
+) -> torch.Tensor:
+    '''
+    Decodes the predicted offsets back to bounding box coordinates in (xmin, ymin, xmax, ymax) format. 
+    Inverse of the encoding process.
+    
+    Args:
+        **anchor_boxes**: tensor of shape (num_anchors, 4) representing anchor boxes in 
+        (xmin, ymin, xmax, ymax) format
+        **encoded_offsets**: tensor of shape (num_anchors, 4) representing the encoded boxes in 
+        (dx, dy, dw, dh) format
+        **variances**: list of two float values representing the variances used for decoding, should 
+        match those used for encoding
+    
+    Returns:
+        **decoded_boxes**: tensor of shape (num_anchors, 4) representing the decoded bounding boxes in 
+        (xmin, ymin, xmax, ymax) format
+    '''
+    decoded_boxes = torch.zeros((anchor_boxes.shape[0], 4), device=device)
+    
+    anchor_cx = (anchor_boxes[:, 0] + anchor_boxes[:, 2]) / 2
+    anchor_cy = (anchor_boxes[:, 1] + anchor_boxes[:, 3]) / 2
+    anchor_w = torch.clamp(anchor_boxes[:, 2] - anchor_boxes[:, 0], min=1e-8)
+    anchor_h = torch.clamp(anchor_boxes[:, 3] - anchor_boxes[:, 1], min=1e-8)
+    
+    var_cx, var_cy = variances[0], variances[0]
+    var_w, var_h = variances[1], variances[1]
+    
+    offsets_cx = encoded_offsets[:, 0] * var_cx
+    offsets_cy = encoded_offsets[:, 1] * var_cy
+    offsets_w = encoded_offsets[:, 2] * var_w
+    offsets_h = encoded_offsets[:, 3] * var_h
+    
+    decoded_cx = offsets_cx * anchor_w + anchor_cx
+    decoded_cy = offsets_cy * anchor_h + anchor_cy
+    decoded_w = torch.exp(offsets_w) * anchor_w
+    decoded_h = torch.exp(offsets_h) * anchor_h
+    
+    xmin = decoded_cx - decoded_w / 2
+    ymin = decoded_cy - decoded_h / 2
+    xmax = decoded_cx + decoded_w / 2
+    ymax = decoded_cy + decoded_h / 2
+    
+    decoded_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
+    # clamp to [0, 1] range since we are using normalized coordinates, prevents boxes
+    # from going out of bounds
+    decoded_boxes = torch.clamp(decoded_boxes, min=0.0, max=1.0)
+    return decoded_boxes
+
+# TODO: implement NMS, post-processing (do after model.py is done)
