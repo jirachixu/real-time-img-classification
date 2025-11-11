@@ -257,13 +257,13 @@ class SSDModel(nn.Module):
         
         Args:
             **boxes (torch.Tensor)**: Tensor of shape (n_boxes, 4) containing decoded bounding box coordinates.
-            **confidences (torch.Tensor)**: Tensor of shape (n_boxes,) containing confidence scores 
+            **confidences (torch.Tensor)**: Tensor of shape (n_boxes, n_classes) containing confidence scores 
             for each box.
             **iou_threshold (float, optional)**: IoU threshold for NMS.
             **confidence_threshold (float, optional)**: Confidence threshold to filter boxes before NMS.
             **max_detections_per_class (int, optional)**: Maximum number of detections to keep per class.
             **use_torch (bool, optional)**: Whether to use PyTorch's built-in NMS function. 
-            If False, uses custom (slower) implementation.
+            If False, uses custom (slower) implementation. Default is True.
         
         Returns:
             **tuple(list)**: Tuple containing lists of kept boxes, labels, and scores after NMS. These 
@@ -329,6 +329,9 @@ class SSDModel(nn.Module):
                 return None
         
         # gets the maximum confidence score and corresponding class for each box
+        # max_scores, max_classes have shape (n_boxes,) and max_classes contains the 
+        # class indices corresponding to the maximum scores from 0 to 79 since we started
+        # from index 1 to ignore background
         max_scores, max_classes = confidences[:, 1:].max(dim=1)
         # filter out boxes whose maximum confidence score across all classes is lower
         # than the threshold
@@ -351,7 +354,65 @@ class SSDModel(nn.Module):
             candidate_scores[keep]
         )
 
-    # TODO: implement prediction function REMEMBER TO SUBTRACT 1 FROM NMS OUTPUT LABELS
+    def predict(self, 
+            img: torch.Tensor, 
+            iou_threshold: float = 0.5, 
+            confidence_threshold: float = 0.4,
+            max_detections_per_class: int = 100,
+            use_torch: bool = True
+        ) -> list[dict]:
+        '''
+        Makes predictions on the input image tensor(s) by performing a forward pass and applying NMS to 
+        filter the results.
+        
+        Args:
+            **img (torch.Tensor)**: Input image tensor of shape (batch_size, 3, height, width).
+            **iou_threshold (float, optional)**: IoU threshold for NMS.
+            **confidence_threshold (float, optional)**: Confidence threshold to filter boxes before NMS.
+            **max_detections_per_class (int, optional)**: Maximum number of detections to keep per class.
+            **use_torch (bool, optional)**: Whether to use PyTorch's built-in NMS function. 
+            If False, uses custom (slower) implementation. Default is True.
+            
+        Returns:
+            **list[dict]**: List of dictionaries containing detected boxes, labels, and scores for each 
+            image in the batch.
+        '''
+        self.eval()
+        # disables gradient calculation when evaluating/predicting for efficiency, since we only need 
+        # them to train the model
+        with torch.no_grad():
+            predicted_offsets, predicted_class_scores = self.forward(img)
+            batch_size = img.shape[0]
+            all_detections = []
+            for batch in range(batch_size):
+                decoded_boxes = decode_offsets(self.anchor_boxes, predicted_offsets[batch])
+                nms_result = self.nms(
+                    decoded_boxes,
+                    # we need to softmax to get actual class probabilities since that's what the 
+                    # threshold value is with respect to
+                    F.softmax(predicted_class_scores[batch], dim=1),
+                    iou_threshold,
+                    confidence_threshold,
+                    max_detections_per_class,
+                    use_torch
+                )
+                if nms_result is not None:
+                    boxes, labels, scores = nms_result
+                    detections = {
+                        'boxes': boxes,
+                        # subtract 1 to get original class labels since model uses 0 for background,
+                        # which is not reflective of data (data doesn't have background class)
+                        'labels': labels - 1,
+                        'scores': scores
+                    }
+                    all_detections.append(detections)
+                else:
+                    all_detections.append({
+                        'boxes': torch.empty((0, 4), device=device),
+                        'labels': torch.empty((0,), device=device, dtype=torch.long),
+                        'scores': torch.empty((0,), device=device)
+                    })
+        return all_detections
 
 # test dimensionality of outputs
 model = SSDModel()
@@ -374,6 +435,7 @@ with torch.no_grad():
     print(f'nms: {nms}')
     if nms is not None:
         print(nms[0].shape, nms[1].shape, nms[2].shape)
+        print(nms[1].min(), nms[1].max())
     
     x = model.layer1(x)
     
